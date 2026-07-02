@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="ABAssetBrowserConfig" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/asset_browser/asset_browser_config.gd" id="1_config"]
+
+[resource]
+script = ExtResource("1_config")
+open_in_dock = true
+open_in_bottom_panel = true
+dock_slot = 0
+bottom_panel_title = "Asset Browser"
