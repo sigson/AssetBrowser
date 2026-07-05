@@ -1,6 +1,18 @@
 # Asset Browser (Godot 4 plugin)
 
+<img src="https://raw.githubusercontent.com/sigson/AssetBrowser/refs/heads/godot3/addons/asset_browser/icon.png" alt="Preview 0" width="100"/>
+
 A Godot 4 editor addon — a Unity-like dockable project browser with tabbed views, fast search, resource-type filtering, tags, favorites, and flexible performance settings.
+
+## Preview
+How plugin looks like (preview screen get from godot 3, in godot 4 looking similar):
+<table>
+  <tr>
+    <td><img src="https://raw.githubusercontent.com/sigson/AssetBrowser/refs/heads/godot3/addons/asset_browser/img/screen1.png" alt="Preview 1" width="300"/></td>
+    <td><img src="https://raw.githubusercontent.com/sigson/AssetBrowser/refs/heads/godot3/addons/asset_browser/img/screen2.png" alt="Preview 2" width="300"/></td>
+    <td><img src="https://raw.githubusercontent.com/sigson/AssetBrowser/refs/heads/godot3/addons/asset_browser/img/screen3.png" alt="Preview 3" width="300"/></td>
+  </tr>
+</table>
 
 ## Installation
 
