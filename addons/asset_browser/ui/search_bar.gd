@@ -18,6 +18,11 @@ var _state = null
 var _debounce = null
 var _opt_in_dlg = null
 
+var _direct = null
+var _git = null
+var _git_menu = null
+var _git_sync = false
+
 func build(shared, state):
     _s = shared
     _state = state
@@ -36,6 +41,20 @@ func build(shared, state):
     add_child(_type)
 
     _scope = _toggle("Filesystem", "all", "global scope", state.scope_global)
+
+    # Direct filter: фильтровать видимость файлов прямо в директориях вместо
+    # переключения в режим результатов поиска.
+    _direct = Button.new()
+    _direct.toggle_mode = true
+    _direct.pressed = state.direct
+    _direct.hint_tooltip = "direct filter: hide non-matching files in place"
+    _direct.focus_mode = Control.FOCUS_NONE
+    _glyph(_direct, "Filter", "direct")
+    _direct.connect("toggled", self, "on_direct_toggled")
+    add_child(_direct)
+
+    _build_git_controls(state)
+    _refresh_scope_enabled()
 
     _clear = Button.new()
     _clear.focus_mode = Control.FOCUS_NONE
@@ -79,6 +98,102 @@ func build(shared, state):
 
     _refresh_type_toggle()
 
+# ---------- git ----------
+func _build_git_controls(state):
+    var have_git = _s != null and _s.git != null and _s.git.available
+
+    _git = Button.new()
+    _git.toggle_mode = true
+    _git.pressed = state.git_view and have_git
+    _git.disabled = not have_git
+    _git.hint_tooltip = "git view: colour by state" if have_git \
+        else "git view: project is not in a git working tree"
+    _git.focus_mode = Control.FOCUS_NONE
+    _glyph(_git, "VcsBranches", "git")
+    _git.connect("toggled", self, "on_git_toggled")
+    add_child(_git)
+
+    if not state.git_view or not have_git:
+        state.git_view = false
+        state.git_states = null
+
+    _git_menu = MenuButton.new()
+    _git_menu.hint_tooltip = "git state filter"
+    _git_menu.focus_mode = Control.FOCUS_NONE
+    _glyph(_git_menu, "VcsChanges", "state")
+    var p = _git_menu.get_popup()
+    p.add_check_item("New", ABGitService.Status.NEW)
+    p.add_check_item("Modified", ABGitService.Status.MODIFIED)
+    p.add_check_item("Unmodified", ABGitService.Status.UNMODIFIED)
+    p.add_separator()
+    p.add_item("All (default)", 10)
+    p.add_item("Refresh git status", 11)
+    p.connect("id_pressed", self, "on_git_state_picked")
+    p.connect("about_to_show", self, "refresh_git_checks")
+    add_child(_git_menu)
+
+    _refresh_git_enabled()
+
+func on_git_toggled(pressed):
+    if _git_sync:
+        return
+    _state.git_view = pressed
+    if not pressed:
+        _state.git_states = null
+    else:
+        _s.git.ensure_fresh(true)
+    _refresh_git_enabled()
+    _debounce.stop()
+    _emit()
+
+func on_git_state_picked(id):
+    if id == 11:
+        _s.git.ensure_fresh(true)
+        _debounce.stop()
+        _emit()
+        return
+
+    if id == 10:
+        _state.git_states = null
+    else:
+        var cur = {} if _state.git_states == null else _state.git_states.duplicate()
+        if cur.has(id):
+            cur.erase(id)
+        else:
+            cur[id] = true
+        # пустой набор и полный набор эквивалентны дефолту
+        _state.git_states = null if (cur.size() == 0 or cur.size() >= 3) else cur
+
+    _debounce.stop()
+    _emit()
+
+func refresh_git_checks():
+    var p = _git_menu.get_popup()
+    var sel = _state.git_states
+    for st in [ABGitService.Status.NEW, ABGitService.Status.MODIFIED, ABGitService.Status.UNMODIFIED]:
+        var idx = p.get_item_index(st)
+        if idx >= 0:
+            p.set_item_checked(idx, sel != null and sel.has(st))
+
+func _refresh_git_enabled():
+    if _git_menu != null:
+        _git_menu.disabled = not _state.git_view
+
+func on_direct_toggled(pressed):
+    _state.direct = pressed
+    _refresh_scope_enabled()
+    _debounce.stop()
+    _emit()
+
+# Область поиска применима только к обходу. Direct filter обхода не делает —
+# фильтруется всегда текущая директория, поэтому тоггл гасим, чтобы он не врал.
+func _refresh_scope_enabled():
+    if _scope == null:
+        return
+    _scope.disabled = _state.direct
+    _scope.hint_tooltip = "global scope — недоступно при direct filter (фильтруется текущая папка)" \
+        if _state.direct else "global scope"
+
 func on_type_toggled(_pressed):
     if _type_sync:
         return
@@ -119,6 +234,14 @@ func sync_from_state():
     if _input != null:
         _input.text = _state.text
     _refresh_type_toggle()
+    if _direct != null:
+        _direct.pressed = _state.direct
+    _refresh_scope_enabled()
+    if _git != null:
+        _git_sync = true
+        _git.pressed = _state.git_view
+        _git_sync = false
+    _refresh_git_enabled()
 
 func _toggle(icon, fallback, tip, pressed):
     var b = Button.new()
@@ -168,6 +291,10 @@ func on_clear():
     _input.text = ""
     _state.text = ""
     _state.types = null
+    # git-состояния — такой же критерий запроса, как текст и тип: «очистить»
+    # обязано снять и его, иначе вью останется в режиме результатов.
+    # Сам git view при этом не выключаем — это режим подсветки, а не запрос.
+    _state.git_states = null
     _refresh_type_toggle()
     _debounce.stop()
     _emit()

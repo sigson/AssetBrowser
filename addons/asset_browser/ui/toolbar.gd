@@ -13,6 +13,7 @@ signal search_changed()
 signal segment_picked(dir)
 signal sort_requested(column, asc)
 signal freeze_toggled(on)
+signal import_requested()
 
 var _s = null
 var _back = null
@@ -94,6 +95,21 @@ func build(shared, state):
         gear.text = "cfg"
     gear.connect("pressed", self, "on_settings")
     row.add_child(gear)
+
+    var imp = Button.new()
+    imp.hint_tooltip = "Send selection to the Import dock"
+    imp.focus_mode = Control.FOCUS_NONE
+    var imp_ic = null
+    if _s != null:
+        imp_ic = _s.thumbs.editor_icon("Import")
+        if imp_ic == null:
+            imp_ic = _s.thumbs.editor_icon("Load")
+    if imp_ic != null:
+        imp.icon = imp_ic
+    else:
+        imp.text = "imp"
+    imp.connect("pressed", self, "on_import")
+    row.add_child(imp)
 
     _freeze = Button.new()
     _freeze.toggle_mode = true
@@ -222,6 +238,9 @@ func on_killswitch():
 func on_restart():
     if _s != null and _s.restart_hook != null:
         _s.call_restart_hook()
+
+func on_import():
+    emit_signal("import_requested")
 
 func on_freeze():
     emit_signal("freeze_toggled", _freeze.pressed)

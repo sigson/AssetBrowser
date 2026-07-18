@@ -31,7 +31,9 @@ func _init(db, tags, settings, graph):
     _graph = graph
 
 # Возвращает курсор (SearchCursor) с методом next() -> AssetNode|null.
-func query(s, current_dir):
+# traversal=false => курсор используется только как предикат (direct filter),
+# обхода не будет, поэтому «глобальные» ограничения к нему неприменимы.
+func query(s, current_dir, traversal = true):
     var parsed = _parse_tokens(s.text)
     var type_filter = parsed.type_filter
     var label_filters = parsed.labels
@@ -39,10 +41,12 @@ func query(s, current_dir):
 
     var root = "res://" if s.scope_global else ABAssetDatabase.normalize(current_dir)
 
-    # ФТ-4: opt-in на глобальный контент-поиск.
+    # ФТ-4: opt-in на глобальный контент-поиск. Гасит поиск по содержимому только
+    # когда обход действительно глобальный: при фильтрации на месте читается одна
+    # директория, и блокировать её из-за тоггла области нечестно.
     var require_optin = _settings == null or _settings.content_requires_global_optin
     var content_allowed = s.content
-    if s.content and s.scope_global and require_optin and not s.global_content_confirmed:
+    if s.content and s.scope_global and traversal and require_optin and not s.global_content_confirmed:
         content_allowed = false
         global_content_blocked = true
 
@@ -51,6 +55,11 @@ func query(s, current_dir):
     var cur = SearchCursor.new(self)
     cur.setup(root, rest, s, type_filter, label_filters, content_allowed, content_cap)
     return cur
+
+# Direct filter: тот же предикат, но без обхода — вызывающий сам подаёт узлы
+# текущей директории в matches().
+func make_matcher(s, current_dir):
+    return query(s, current_dir, false)
 
 # ---------- структурный тип-фильтр ----------
 func match_type_filter(n, sel):
@@ -231,6 +240,10 @@ class SearchCursor:
                 var d = _stack.pop_back()
                 _pending = _e._db.get_children(d)
                 _idx = 0
+
+    # Публичная проверка одного узла (direct filter).
+    func matches(n):
+        return _match(n)
 
     func _match(n):
         # структурный тип (дёшево, s.types) идёт первым

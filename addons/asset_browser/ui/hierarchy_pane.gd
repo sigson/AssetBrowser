@@ -29,6 +29,7 @@ var _selected_dir = "res://"
 var _refresh_timer = null
 var _last_refresh_ms = -100000.0
 var _force_full = false
+var _git_view = false
 
 func build(shared):
     _s = shared
@@ -75,6 +76,29 @@ func _dir_icon():
 func on_favorites_changed():
     _force_full = true
     _do_refresh()
+
+# ---------- git ----------
+# Директории, внутри которых есть файлы из diff, получают выделяющийся цвет текста.
+func set_git_view(on):
+    if _git_view == on:
+        return
+    _git_view = on
+    refresh_git_colors()
+
+func refresh_git_colors():
+    for path in _items.keys():
+        var it = _items[path]
+        if is_instance_valid(it):
+            _apply_git_color(it, path)
+
+func _apply_git_color(item, path):
+    if not _git_view or _s.git == null or not _s.git.available:
+        item.clear_custom_color(0)
+        return
+    if _s.git.is_dir_dirty(path):
+        item.set_custom_color(0, _s.git.dir_color())
+    else:
+        item.clear_custom_color(0)
 
 # ---------- коалесцирование ----------
 func refresh():
@@ -149,6 +173,7 @@ func _full_rebuild():
     _root_dir_item.set_metadata(0, "res://")
     _root_dir_item.set_icon(0, _dir_icon())
     _items["res://"] = _root_dir_item
+    _apply_git_color(_root_dir_item, "res://")
     _root_dir_item.collapsed = false
     _materialize_children(_root_dir_item, "res://")
 
@@ -169,6 +194,7 @@ func _build_dir_node(parent, n):
     it.set_metadata(0, n.path)
     it.set_icon(0, _s.thumbs.get_type_icon(n))
     _items[n.path] = it
+    _apply_git_color(it, n.path)
 
     var want_expanded = _expanded.has(n.path) and _s.settings.lazy_subdirs == true
     var lazy = _s.settings.lazy_subdirs

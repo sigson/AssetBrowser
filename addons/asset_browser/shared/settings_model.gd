@@ -59,6 +59,9 @@ var cache_sweep_interval_sec = 10
 # ---------- [lifecycle] (ФТ-6) ----------
 var persist_suspended = false
 
+# ---------- [git] ----------
+var git_refresh_min_ms = 1500
+
 # ---------- [layout]/[nav]/[spacing] ----------
 var layout_mode = "left_hier_right_files"
 var show_parent_folder = false
@@ -111,6 +114,8 @@ func _reload():
 
     persist_suspended = bool(_read("lifecycle", "persist_suspended", false))
 
+    git_refresh_min_ms = int(_read("git", "refresh_min_interval_ms", 1500))
+
     layout_mode = str(_read("layout", "mode", "left_hier_right_files"))
     show_parent_folder = bool(_read("nav", "show_parent_folder", false))
     grid_tile_gap = int(_read("spacing", "grid_tile_gap_px", 8))
@@ -145,6 +150,11 @@ func _defaults():
     _cfg.set_value("preview", "heavy_frame_budget_ms", 8)
     _cfg.set_value("preview", "cache_sweep_interval_sec", 10)
     _cfg.set_value("lifecycle", "persist_suspended", false)
+    _cfg.set_value("git", "refresh_min_interval_ms", 1500)
+    _cfg.set_value("git", "color_new", "5fd35f")
+    _cfg.set_value("git", "color_modified", "f2c14e")
+    _cfg.set_value("git", "color_unmodified", "9aa3b0")
+    _cfg.set_value("git", "color_dir", "6fb7f0")
     _cfg.set_value("layout", "mode", "left_hier_right_files")
     _cfg.set_value("nav", "show_parent_folder", false)
     _cfg.set_value("spacing", "grid_tile_gap_px", 8)
@@ -164,6 +174,10 @@ func _migrate_dead_keys():
 
 func _read(section, key, def):
     return _cfg.get_value(section, key, def)
+
+# Цвета git-состояний живут в конфиге как hex-строки (без "#").
+func git_color(key, def_hex):
+    return str(_read("git", key, def_hex))
 
 func set_value(section, key, value):
     _cfg.set_value(section, key, value)

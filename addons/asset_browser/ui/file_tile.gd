@@ -54,6 +54,21 @@ func build(view, node, cell, shared):
     _label.rect_min_size = Vector2(0, 18)
     box.add_child(_label)
 
+# Цвет подписи в git view; null => штатный цвет темы.
+func set_name_color(c):
+    if _label == null:
+        return
+    if c == null:
+        _label.add_color_override("font_color", _default_label_color())
+    else:
+        _label.add_color_override("font_color", c)
+
+func _default_label_color():
+    var base = _s.editor.get_base_control() if _s != null and _s.editor != null else null
+    if base != null and base.has_color("font_color", "Label"):
+        return base.get_color("font_color", "Label")
+    return Color(0.86, 0.88, 0.91)
+
 func set_thumb(tex):
     if _icon != null:
         _icon.texture = tex

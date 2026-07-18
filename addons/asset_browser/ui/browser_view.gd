@@ -14,6 +14,7 @@ var _settings_dlg = null
 var _tree_debounce = null
 var _shared_connected = false
 var _frozen = false
+var _import = null
 
 func build(shared, state):
     _s = shared
@@ -33,6 +34,7 @@ func build(shared, state):
     _toolbar.connect("segment_picked", self, "on_segment")
     _toolbar.connect("sort_requested", self, "on_sort_requested")
     _toolbar.connect("freeze_toggled", self, "on_freeze_toggled")
+    _toolbar.connect("import_requested", self, "on_import_requested")
     add_child(_toolbar)
 
     _build_work_area()
@@ -46,6 +48,13 @@ func build(shared, state):
     _settings_dlg.build(_s.settings)
     add_child(_settings_dlg)
 
+    # Зеркалирование выделения в FileSystemDock — иначе окно Import видит
+    # только то, что выделено там, а не группу, выбранную здесь.
+    _import = ABImportBridge.new()
+    add_child(_import)
+    _import.build(_s)
+    _import.connect("note", self, "on_import_note")
+
     _tree_debounce = Timer.new()
     _tree_debounce.one_shot = true
     _tree_debounce.connect("timeout", self, "apply_tree_changed")
@@ -53,6 +62,7 @@ func build(shared, state):
 
     _s.db.connect("tree_changed", self, "on_tree_changed")
     _s.settings.connect("changed", self, "on_settings_changed")
+    _s.git.connect("status_changed", self, "on_git_status_changed")
     _shared_connected = true
 
     _sync_all()
@@ -64,11 +74,18 @@ func disconnect_shared():
         _s.db.disconnect("tree_changed", self, "on_tree_changed")
     if _s != null and is_instance_valid(_s.settings) and _s.settings.is_connected("changed", self, "on_settings_changed"):
         _s.settings.disconnect("changed", self, "on_settings_changed")
+    if _s != null and is_instance_valid(_s.git) and _s.git.is_connected("status_changed", self, "on_git_status_changed"):
+        _s.git.disconnect("status_changed", self, "on_git_status_changed")
     _shared_connected = false
 
 func _build_work_area():
     if _split_or_single != null:
-        _split_or_single.queue_free()
+        # remove_child немедленный, queue_free — нет: без этого старая и новая
+        # рабочие области кадр делят высоту пополам (см. ABFileView._drop_view).
+        if is_instance_valid(_split_or_single):
+            if _split_or_single.get_parent() == self:
+                remove_child(_split_or_single)
+            _split_or_single.queue_free()
         _split_or_single = null
 
     _hier = null
@@ -111,6 +128,9 @@ func _build_work_area():
     _files.connect("edit_requested", self, "on_edit")
     _files.connect("status_update", self, "on_status")
     _files.connect("note_update", self, "on_note")
+    _files.connect("hidden_update", self, "on_hidden")
+    _files.connect("diag_update", self, "on_diag")
+    _files.connect("selection_changed", self, "on_selection_changed")
     _files.connect("create_requested", self, "on_create")
 
     add_child_below_node(_toolbar, _split_or_single)
@@ -125,6 +145,7 @@ func _sync_all():
     _toolbar.update_nav(_state.can_back(), _state.can_fwd(), _state.current_dir)
     _toolbar.set_sort(_state.sort_column, _state.sort_asc)
     if _hier != null:
+        _hier.set_git_view(_state.search.git_view)
         _hier.select_dir(_state.current_dir)
     _files.populate()
     _state.title = "Assets" if _state.current_dir == "res://" else _state.current_dir.substr(_state.current_dir.find_last("/") + 1)
@@ -162,6 +183,8 @@ func on_sort_requested(column, asc):
 
 func on_search():
     _release_freeze()
+    if _hier != null:
+        _hier.set_git_view(_state.search.git_view)
     _files.populate()
 
 func on_status(count, sel_path):
@@ -169,6 +192,35 @@ func on_status(count, sel_path):
 
 func on_note(note):
     _status.set_note(note)
+
+func on_hidden(count, summary):
+    _status.set_hidden(count, summary)
+
+func on_diag(text):
+    _status.set_diag(text)
+
+# Авто-синк отключён: выделение только запоминается, в док его отправляет
+# кнопка на тулбаре — так видно, дошло оно до Import или нет.
+func on_selection_changed(sel):
+    _state.selection = Array(sel)
+
+func on_import_requested():
+    if _import == null:
+        return
+    if _state.selection.size() == 0:
+        _status.set_note("import: ничего не выделено")
+        return
+    _import.push_now(_state.selection)
+
+func on_import_note(text):
+    if text != null and text != "":
+        _status.set_note(text)
+
+func on_git_status_changed():
+    if _hier != null:
+        _hier.refresh_git_colors()
+    if _state.search.git_view:
+        _files.populate()
 
 func on_split_dragged(offset):
     _state.splitter_ratio = offset / 300.0
@@ -224,6 +276,9 @@ func on_tree_changed():
     _tree_debounce.start(wait)
 
 func apply_tree_changed():
+    if _state.search.git_view:
+        _s.git.ensure_fresh()
+
     var dir_changed = false
     if not _s.db.has_dir(_state.current_dir):
         var fallback = _s.db.nearest_existing_dir(_state.current_dir)

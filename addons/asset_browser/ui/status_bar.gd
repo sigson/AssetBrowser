@@ -6,6 +6,8 @@ signal zoom_changed(value)
 
 var _count = null
 var _note = null
+var _hidden = null
+var _diag = null
 var _path = null
 var _zoom = null
 var _max = 0
@@ -24,6 +26,18 @@ func build(preview_size, max_preview_size):
     _note.text = ""
     _note.add_color_override("font_color", Color(0.95, 0.75, 0.2))   # приглушённо-янтарный
     add_child(_note)
+
+    # Direct filter / git: сколько файлов скрыто в текущей директории.
+    _hidden = Label.new()
+    _hidden.text = ""
+    _hidden.add_color_override("font_color", Color(0.55, 0.72, 0.95))
+    add_child(_hidden)
+
+    # Диагностика рассинхрона сетки; в норме пусто.
+    _diag = Label.new()
+    _diag.text = ""
+    _diag.add_color_override("font_color", Color(0.95, 0.4, 0.4))
+    add_child(_diag)
 
     add_child(VSeparator.new())
 
@@ -59,6 +73,21 @@ func set_info(count, selected_path):
 func set_note(note):
     if _note != null:
         _note.text = "" if (note == null or note == "") else "— " + note
+
+# count — скрыто фильтром в текущей директории; summary — активный git-фильтр.
+func set_hidden(count, summary):
+    if _hidden == null:
+        return
+    var parts = []
+    if count > 0:
+        parts.append("%d hidden" % count)
+    if summary != null and summary != "":
+        parts.append(summary)
+    _hidden.text = "" if parts.size() == 0 else "[" + PoolStringArray(parts).join(", ") + "]"
+
+func set_diag(text):
+    if _diag != null:
+        _diag.text = "" if text == null else text
 
 func set_zoom(v):
     if _zoom != null:

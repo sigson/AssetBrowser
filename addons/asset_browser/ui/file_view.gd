@@ -12,6 +12,8 @@ signal selection_changed(sel)
 signal status_update(count, sel_path)
 signal create_requested(kind)
 signal note_update(note)
+signal hidden_update(count, summary)
+signal diag_update(text)
 
 var _s = null
 var _state = null
@@ -22,6 +24,7 @@ var _grid = null
 var _canvas = null
 
 var _nodes = []
+var _seen = {}
 var _tiles = {}
 var _rows = {}
 var _selection = []
@@ -54,12 +57,18 @@ var _repop_timer = null
 
 var _search_cursor = null
 var _search_engine = null
+var _hidden_count = 0
 var _search_running = false
 var _search_cap = 1
 var _search_count = 0
 var _frozen = false
 
 var _size_needed = false
+var _populating = false
+
+# Диагностика: сколько дублей путей пришло из БД и было отброшено на последней сборке.
+# Ненулевое значение означает, что источник узлов отдаёт один и тот же путь дважды.
+var _dup_dropped = 0
 
 var _ctx = null
 var _create_menu = null
@@ -121,6 +130,15 @@ func on_create_picked(kind):
 
 # ---------- population ----------
 func populate():
+    # Страховка от реентерабельности: вложенный populate() дозаполнял бы _nodes
+    # поверх внешнего, давая дубликаты путей и дыры в сетке.
+    if _populating:
+        return
+    _populating = true
+    _populate_impl()
+    _populating = false
+
+func _populate_impl():
     if _frozen:
         _render_frozen()
         return
@@ -144,6 +162,7 @@ func populate():
     var widget_ready = (_list != null) if _state.view == ABBrowserTabState.ViewMode.LIST else (_scroll != null)
     if not _search_running and sig == _view_sig and widget_ready:
         emit_signal("status_update", _visible_count(), _sel_last())
+        _emit_hidden()
         return
     _view_sig = sig
     _last_build_ms = _now_ms()
@@ -159,6 +178,7 @@ func populate():
 
     emit_signal("status_update", _visible_count(), _sel_last())
     _emit_search_note()
+    _emit_hidden()
 
 func _render_frozen():
     var prev_scroll = _scroll.scroll_vertical if _scroll != null else 0
@@ -182,7 +202,7 @@ func _render_frozen():
     emit_signal("status_update", _visible_count(), _sel_last())
 
 func _emit_search_note():
-    if _search_engine == null or _state.search.is_empty():
+    if _search_engine == null or not _state.search.has_text_query():
         emit_signal("note_update", "")
         return
     if _search_engine.global_content_blocked:
@@ -194,14 +214,21 @@ func _emit_search_note():
 
 func _collect_nodes():
     _nodes.clear()
+    _seen.clear()
+    _dup_dropped = 0
     _search_running = false
     _search_cursor = null
     _search_engine = null
+    _hidden_count = 0
 
-    if not _state.search.is_empty():
+    var st = _state.search
+    if st.git_view:
+        _s.git.ensure_fresh()
+
+    if st.results_mode():
         _search_engine = ABSearchEngine.new(_s.db, _s.tags, _s.settings, _s.type_graph)
         _search_cap = max(1, _s.settings.search_max_results)
-        var cursor = _search_engine.query(_state.search, _state.current_dir)
+        var cursor = _search_engine.query(st, _state.current_dir)
 
         if _s.settings.search_async and _state.view != ABBrowserTabState.ViewMode.LIST:
             _search_cursor = cursor
@@ -212,14 +239,15 @@ func _collect_nodes():
         var got = []
         var node = cursor.next()
         while node != null and got.size() < _search_cap:
-            got.append(node)
+            if _git_pass(node, false):
+                got.append(node)
             node = cursor.next()
         _sort_into(got)
         return
 
-    _sort_into(_s.db.get_children(_state.current_dir))
+    _sort_into(_filtered_children())
 
-    if _s.settings.show_parent_folder and _state.search.is_empty() \
+    if _s.settings.show_parent_folder \
         and ABAssetDatabase.normalize(_state.current_dir) != "res://":
         var up = ABAssetNode.new()
         up.path = PARENT_MARKER
@@ -228,11 +256,114 @@ func _collect_nodes():
         up.res_type = "Folder"
         _nodes.insert(0, up)
 
+# Содержимое текущей директории с учётом direct filter и git-фильтра.
+#
+# ПРАВИЛО ПАЙПЛАЙНА «ФИЛЬТР НА МЕСТЕ»: критерии применяются только к ФАЙЛАМ,
+# директории видны всегда и ни одним фильтром не скрываются — иначе из
+# отфильтрованной папки некуда навигировать. Это единственное намеренное
+# расхождение с пайплайном выдачи, где папки отбрасываются тип- и git-фильтром
+# и проверяются по имени/меткам (ABSearchEngine.SearchCursor._match).
+func _filtered_children():
+    var st = _state.search
+    var kids = _s.db.get_children(_state.current_dir)
+    if not st.direct_filter_active():
+        return kids
+
+    # Движок нужен только под текст/тип: чистый git-фильтр разбирается сам.
+    var matcher = null
+    if st.has_text_query():
+        _search_engine = ABSearchEngine.new(_s.db, _s.tags, _s.settings, _s.type_graph)
+        matcher = _search_engine.make_matcher(st, _state.current_dir)
+
+    var keep = []
+    for n in kids:
+        if n.is_dir:
+            keep.append(n)
+            continue
+        if matcher != null and not matcher.matches(n):
+            _hidden_count += 1
+            continue
+        if not _git_pass(n, true):
+            _hidden_count += 1
+            continue
+        keep.append(n)
+    return keep
+
+# Цвет текста узла в git view: директории с файлами в diff — свой цвет,
+# файлы — три цвета по состоянию. Вне git view — null (штатный цвет темы).
+func _git_color(n):
+    if not _state.search.git_view or not _s.git.available:
+        return null
+    if n.path == PARENT_MARKER:
+        return null
+    if n.is_dir:
+        return _s.git.dir_color() if _s.git.is_dir_dirty(n.path) else null
+    return _s.git.color_for(_s.git.status_of(n.path))
+
+# allow_dirs: при фильтрации на месте директории видны всегда — иначе из
+# отфильтрованной папки некуда навигировать. В режиме результатов git-фильтр —
+# критерий по файлам (как и тип-фильтр), поэтому директории в выдачу не идут.
+func _git_pass(n, allow_dirs):
+    var st = _state.search
+    if not st.git_filter_active():
+        return true
+    if n.is_dir:
+        return allow_dirs
+    return st.git_states.has(_s.git.status_of(n.path))
+
+func _emit_hidden():
+    emit_signal("hidden_update", _hidden_count, _git_summary())
+    _emit_diag()
+
+# Диагностика рассинхрона сетки. В норме строка пуста.
+# nodes!=tiles само по себе нормально при виртуализации (плитки только для окна прокрутки),
+# поэтому сверяем только то, что обязано совпадать.
+func _emit_diag():
+    var parts = []
+    if _dup_dropped > 0:
+        parts.append("dup:%d" % _dup_dropped)
+
+    # индекс обязан покрывать ровно _nodes: расхождение => дубликаты путей на входе
+    if _index.size() > 0 and _index.size() != _nodes.size():
+        parts.append("idx:%d/%d" % [_index.size(), _nodes.size()])
+
+    # лишние ScrollContainer/Tree в самом вью => наложение старой и новой сетки,
+    # из-за которого область файлов делится пополам
+    var views = 0
+    for c in get_children():
+        if c is ScrollContainer or c is Tree:
+            views += 1
+    if views > 1:
+        parts.append("views:%d" % views)
+
+    var text = "" if parts.size() == 0 else "DIAG " + PoolStringArray(parts).join(" ")
+    if text != "":
+        print("[AssetBrowser] ", text, " dir=", _state.current_dir)
+    emit_signal("diag_update", text)
+
+func _git_summary():
+    var st = _state.search
+    if not st.git_view or not _s.git.available:
+        return ""
+    if st.git_states == null:
+        return "git: all"
+    var names = []
+    for k in [ABGitService.Status.NEW, ABGitService.Status.MODIFIED, ABGitService.Status.UNMODIFIED]:
+        if st.git_states.has(k):
+            names.append(ABGitService.status_name(k))
+    return "git: " + PoolStringArray(names).join("+")
+
 func _sort_into(list):
     _size_needed = _state.sort_column == "Size" \
         and (not _s.settings.defer_size_column or _state.view == ABBrowserTabState.ViewMode.LIST)
     list.sort_custom(self, "_cmp_nodes")
     for n in list:
+        # _tiles/_index/_rows ключуются по пути: дубликат в _nodes даёт
+        # пропущенные плитки и завышенную высоту холста.
+        if _seen.has(n.path):
+            _dup_dropped += 1
+            continue
+        _seen[n.path] = true
         _nodes.append(n)
 
 func _cmp_nodes(a, b):
@@ -265,8 +396,10 @@ func _sign(x):
 
 func _compute_sig():
     var cell = int(clamp(_state.preview_size, 32, _s.settings.max_preview_size))
+    var git_rev = _s.git.revision if _state.search.git_view else -1
     var parts = str(_state.view) + "|" + str(cell) + "|" + str(_state.sort_column) \
-        + "|" + str(_state.sort_asc) + "|" + str(_nodes.size())
+        + "|" + str(_state.sort_asc) + "|" + str(_nodes.size()) \
+        + "|" + _state.search.filter_sig() + "|" + str(git_rev)
     for n in _nodes:
         parts += "|" + n.path
     return hash(parts)
@@ -280,14 +413,23 @@ func _clear_views():
     _index.clear()
     _win_first = -1
     _win_last = -1
-    if _list != null:
-        _list.queue_free()
-        _list = null
-    if _scroll != null:
-        _scroll.queue_free()
-        _scroll = null
-        _grid = null
-        _canvas = null
+    # queue_free() отложен до конца кадра, а новый контейнер добавляется сразу:
+    # пока старый висит в дереве, VBoxContainer делит высоту между двумя детьми
+    # с SIZE_EXPAND_FILL, и сетка занимает половину области. remove_child()
+    # немедленный, поэтому убираем из layout сразу, а освобождаем уже отложенно.
+    _drop_view(_list)
+    _list = null
+    _drop_view(_scroll)
+    _scroll = null
+    _grid = null
+    _canvas = null
+
+func _drop_view(node):
+    if node == null or not is_instance_valid(node):
+        return
+    if node.get_parent() == self:
+        remove_child(node)
+    node.queue_free()
 
 # ---------- LIST ----------
 func _build_list():
@@ -329,6 +471,9 @@ func _build_list():
         it.set_icon(0, _s.thumbs.get_type_icon(n))
         it.set_icon_max_width(0, 16)
         it.set_metadata(0, n.path)
+        var gc = _git_color(n)
+        if gc != null:
+            it.set_custom_color(0, gc)
         if _selection.has(n.path):
             it.select(0)
         _rows[n.path] = it
@@ -425,6 +570,7 @@ func _make_tile(i):
         _grid.add_child(tile)
     _tiles[n.path] = tile
     tile.set_selected(_selection.has(n.path))
+    tile.set_name_color(_git_color(n))
 
     if not n.is_dir:
         var cached = _s.thumbs.peek_cached(n.path, true)
@@ -547,12 +693,15 @@ func _pump_search():
         if n == null:
             finished = true
             break
+        done += 1
+        if not _git_pass(n, false) or _seen.has(n.path):
+            continue
+        _seen[n.path] = true
         var i = _nodes.size()
         _nodes.append(n)
         _index[n.path] = i
         _search_count += 1
         _make_tile(i)
-        done += 1
     emit_signal("status_update", _visible_count(), _sel_last())
     if finished:
         _finish_search()
@@ -563,6 +712,7 @@ func _finish_search():
 
     var captured = _nodes.duplicate()
     _nodes.clear()
+    _seen.clear()
     _sort_into(captured)
 
     _clear_views()
@@ -572,6 +722,7 @@ func _finish_search():
     _view_sig = _compute_sig()
     emit_signal("status_update", _visible_count(), _sel_last())
     _emit_search_note()
+    _emit_hidden()
 
 func _process(_delta):
     if _scroll_tries > 0 and _scroll != null:
@@ -828,7 +979,7 @@ func on_list_rmb(_pos):
     popup_context()
 
 func on_list_empty_rmb(_pos):
-    if not _state.search.is_empty():
+    if _state.search.results_mode():
         return
     _create_menu.set_global_position(get_global_mouse_position())
     _create_menu.popup()
@@ -1021,7 +1172,7 @@ func on_rename_ok():
 func _gui_input(ev):
     if ev is InputEventMouseButton and ev.pressed:
         if ev.button_index == BUTTON_RIGHT:
-            if _state.search.is_empty():
+            if not _state.search.results_mode():
                 _create_menu.set_global_position(get_global_mouse_position())
                 _create_menu.popup()
                 accept_event()

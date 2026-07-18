@@ -292,6 +292,9 @@ func save_state():
         cfg.set_value(sec, "col_type", s.col_type)
         cfg.set_value(sec, "title", s.title)
         cfg.set_value(sec, "search", s.search.text)
+        cfg.set_value(sec, "direct", s.search.direct)
+        cfg.set_value(sec, "git_view", s.search.git_view)
+        cfg.set_value(sec, "git_states", [] if s.search.git_states == null else s.search.git_states.keys())
     cfg.save(_state_path())
 
 func load_state():
@@ -313,6 +316,14 @@ func load_state():
         st.col_type = int(cfg.get_value(sec, "col_type", 90))
         st.title = str(cfg.get_value(sec, "title", "Assets"))
         st.search.text = str(cfg.get_value(sec, "search", ""))
+        st.search.direct = bool(cfg.get_value(sec, "direct", false))
+        st.search.git_view = bool(cfg.get_value(sec, "git_view", false))
+        var gs = cfg.get_value(sec, "git_states", [])
+        if typeof(gs) == TYPE_ARRAY and gs.size() > 0:
+            var d = {}
+            for k in gs:
+                d[int(k)] = true
+            st.search.git_states = d
         _new_tab_silent(st)
     _active = int(cfg.get_value("host", "active", 0))
 
